@@ -36,9 +36,12 @@ def readExpDataBam(base_dir):
     for i,f in enumerate(allfiles):
         if i == 0:
             header  = sp.array([f.split('.')[0]])
-            data    = sp.array(pandas.read_csv(os.path.join(base_dir, f), delim_whitespace = True))#sp.loadtxt(os.path.join(base_dir, f), delimiter = '\t', dtype = 'string')
-            exonpos = data[:,0]#data[:,[0,1]].ravel('C')
-            data    = data[:,1].astype('float')#data[:,[6,7]].ravel('C').astype('float')
+            df = pandas.read_csv(os.path.join(base_dir, f), sep = '\t', header=None)
+            a = df.loc[:, 0]
+            a_array = sp.array(a)
+            #data    = sp.loadtxt(os.path.join(base_dir, f), delimiter = '\t', dtype = 'string') # sp.array(pandas.read_csv(os.path.join(base_dir, f), delim_whitespace = True))#
+            exonpos = sp.array(df.loc[:,0]) #data[:,[0,1]].ravel('C')
+            data    = sp.array(df.loc[:,1]) #.astype('float')#data[:,[6,7]].ravel('C').astype('float')
         else:
             header = sp.hstack((header, sp.array([f.split('.')[0]])))
             tmp    = sp.array(pandas.read_csv(os.path.join(base_dir, f), delim_whitespace = True))#sp.loadtxt(os.path.join(base_dir, f), delimiter = '\t', dtype = 'string')
@@ -53,9 +56,9 @@ def readExpDataBam(base_dir):
     data    = data[:, sidx]
 
     ### remove non chromosomal contigs
-    iOK     = sp.array([x.startswith('chr') for x in exonpos])
-    exonpos = exonpos[iOK]
-    data    = data[iOK,:]
+    #iOK     = sp.array([x.startswith('chr') for x in exonpos])
+    #exonpos = exonpos[iOK]
+    #data    = data[iOK,:]
 
     chrm  = sp.array([x.split(':')[0].strip('chr') for x in exonpos])
     start = sp.array([x.split(':')[1].split('-')[0] for x in exonpos]).astype('int')
