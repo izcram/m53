@@ -68,36 +68,6 @@ def whitelisting(options, header, data):
     data      = data[:, midx_m | midx_n]
     return header, data
 
-
-def calculateBias(exonTgene, data, exonpos):
-    mycounts = sp.zeros((exonTgene.shape[0], data.shape[1], 2))
-    myLength = sp.zeros(exonTgene.shape[0])
-
-    for i,rec in enumerate(exonTgene):
-
-        istart = exonpos == rec[0]
-        iend   = exonpos == rec[1]
-        if sp.sum(istart) == 0:
-            continue
-        if sp.sum(iend) == 0:
-            continue
-        if exonpos[istart][0].split(':')[-1] == '-':
-            tmp    = istart
-            istart = iend
-            iend   = tmp
-
-        startcc  = sp.array(exonpos[istart][0].split(':')[1].split('-')).astype('int')
-        endcc    = sp.array(exonpos[iend][0].split(':')[1].split('-')).astype('int')
-
-        startlen = startcc[1] - startcc[0]
-        endlen   = endcc[1]   - endcc[0]
-       
-        myLength[i]     = float(rec[4])
-        mycounts[i,:,0] = data[istart,:]
-        mycounts[i,:,1] = data[iend,:]  
-    return mycounts, myLength
-
-
 def main():
     ### Parse options
     options = parse_options(sys.argv)
@@ -128,8 +98,8 @@ def main():
 
 
     elif options.dir_cnt != '-':
-        exonpos, header, data   = readExpDataBam(options.dir_cnt) ### move this over to file lists rather than dirs
-        data[data < filt]       = sp.nan
+        data, header   = readExpDataBam(options.dir_cnt) ### move this over to file lists rather than dirs
+        data[data < filt]       = sp.nan # TODO: properly adapt
         if options.qmode == 'rpkm':
             data = (data * 1E9) / sp.sum(data , axis = 0)
             exonl = sp.array([int(x.split(':')[1].split('-')[1]) - int(x.split(':')[1].split('-')[0]) + 1 for x in exonpos])
@@ -143,16 +113,33 @@ def main():
     elif options.fn_bam != '-':
         print "WARNING: Running only gene counts"
         #exonTable = getFullAnnotationTable()
-        exonTable = sp.sort(exonTgene[:,[0,1]].ravel())        
-        data = get_counts_from_single_bam(options.fn_bam,exonTable)
-        sp.savetxt(options.fn_out+'counts.tsv', sp.vstack((exonTable,data[::2])).T, delimiter = '\t', fmt = '%s')
+        #exonTable = sp.sort(exonTgene[:,[0,1]].ravel())
+
+        # data = get_counts_from_single_bam(options.fn_bam,exonTGene)
+
+        regions = pd.concat([exonTgene.loc[:, ["chromosome", "first_start", "first_end"]].rename(columns={"first_start" : "start", "first_end" : "end"}),
+                            exonTgene.loc[:, ["chromosome", "last_start", "last_end"]].rename(columns={"last_start" : "start", "last_end" : "end"})
+                             ])
+
+        region_cnts = get_counts_from_single_bam(options.fn_bam, regions)
+
+        region_cnts_halves = np.split(np.array(region_cnts), 2)
+
+        exonTgene["first_counts"] = region_cnts_halves[0]
+        exonTgene["last_counts"] = region_cnts_halves[1]
+
+        #sp.savetxt(options.fn_out+'counts.tsv', sp.vstack((exonTable,data[::2])).T, delimiter = '\t', fmt = '%s')
+        exonTgene.to_csv(options.fn_out+'counts.tsv', header=None, index=False)
         sys.exit(0)
 
     ### normalize counts by exon length
     logging.info("Normalize counts by exon length")
     if (options.fn_exonq == '-') | (options.qmode == 'raw'):
-        exonl = sp.array([int(x.split(':')[1].split('-')[1]) - int(x.split(':')[1].split('-')[0]) + 1 for x in exonpos])
-        data /= sp.tile(exonl[:, sp.newaxis], data.shape[1])
+        data["first_count"] = data["first_count"]/(data["first_end"] - data["first_start"] + 1)
+        data["last_count"] = data["last_count"] /(data["last_end"] - data["last_start"] + 1)
+
+        #exonl = sp.array([int(x.split(':')[1].split('-')[1]) - int(x.split(':')[1].split('-')[0]) + 1 for x in exonpos])
+        #data /= sp.tile(exonl[:, sp.newaxis], data.shape[1])
         #data /= sp.hstack([exonl[:, sp.newaxis] for x in xrange(data.shape[0] / exonl.shape[0])]).ravel(1)  
 
 
@@ -162,44 +149,47 @@ def main():
         logging.info("Subsetting to whitelist")
         header, data = whitelisting(options, header, data)
 
-
-    ### Calculate 3'/5' Bias
-    logging.info("Calculate Bias")
-    mycounts, myLength = calculateBias(exonTgene, data, exonpos)
-
-
     ### subset to high expression ### TODO: need to change this for clarity here....
-    logging.info("Make sure I got only reasonably expressed genes")
-    if (options.fn_genes == '-') & (options.fn_exonq != '-'): ### assuming that i do not have rpkm and not pre-selected genes anyways
-        primeCov = sp.mean(mycounts[:,:,0], axis = 1)   + sp.mean(mycounts[:,:,1], axis = 1)     
-        ### ensure average expression of 1 rpkm across samples
-        if options.length == 'uq':
-            iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1) 
-        elif options.length == 'mq':
-            iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1)
-        elif options.length == 'lq':
-            iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1)
-        mycounts = mycounts[iOK,:,:]
-        myLength = myLength[iOK]
-        sp.savetxt(options.fn_out+'.geneSet', exonTgene[iOK,:], fmt = '%s', delimiter = '\t')
+    # logging.info("Make sure I got only reasonably expressed genes")
+    # if (options.fn_genes == '-') & (options.fn_exonq != '-'): ### assuming that i do not have rpkm and not pre-selected genes anyways
+    #     primeCov = sp.mean(mycounts[:,:,0], axis = 1)   + sp.mean(mycounts[:,:,1], axis = 1)
+    #     ### ensure average expression of 1 rpkm across samples
+    #     if options.length == 'uq':
+    #         iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1)
+    #     elif options.length == 'mq':
+    #         iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1)
+    #     elif options.length == 'lq':
+    #         iOK  = (sp.mean(mycounts[:,:,0], axis = 1) > 1) & (sp.mean(mycounts[:,:,1], axis = 1) > 1)
+    #     mycounts = mycounts[iOK,:,:]
+    #     myLength = myLength[iOK]
+    #     sp.savetxt(options.fn_out+'.geneSet', exonTgene[iOK,:], fmt = '%s', delimiter = '\t')
 
 
     if options.doPseudo:
         logging.info("Add Pseudocount and estimate ratios")
-        ratio    = ((mycounts[:,:,1] + 1) / (mycounts[:,:,0] + 1))
+
+        ratio = (data["last_count"] + 1.0)/(data["first_count"] + 1.0) #((mycounts[:,:,1] + 1) / (mycounts[:,:,0] + 1))
     else:
         logging.info("Estimate ratios")
-        ratio    = ((mycounts[:,:,1])     / (mycounts[:,:,0]))
 
-    logging.info("Find Median")
-    vals = []
-    for i in xrange(mycounts.shape[1]):        
-        iOK = ~(sp.isnan(mycounts[:,i,0])) & ~(sp.isnan(mycounts[:,i,1]))
-        tmp = ((mycounts[:,i,1] )[iOK]) / ((mycounts[:,i,0] )[iOK] )
-        vals.append(sp.percentile(tmp[~sp.isnan(tmp)],50))
-    vals = sp.array(vals)
+        pos_strand = (data["strand"] == '+')
+        neg_strand = ~pos_strand
 
+        #data["ratio"] = data["transcript_length"]
+        data.loc[pos_strand, "ratio"] = data.loc[pos_strand, "last_count"]/data.loc[pos_strand, "first_count"]
+        data.loc[neg_strand, "ratio"] = data.loc[neg_strand, "first_count"]/data.loc[neg_strand, "last_count"]
 
+        #ratio = data["last_count"]/data["first_count"]
+        ratio = data.loc[:, "ratio"]
+    # logging.info("Find Median")
+    # vals = []
+    # for i in xrange(mycounts.shape[1]):
+    #     iOK = ~(sp.isnan(mycounts[:,i,0])) & ~(sp.isnan(mycounts[:,i,1]))
+    #     tmp = ((mycounts[:,i,1] )[iOK]) / ((mycounts[:,i,0] )[iOK] )
+    #     vals.append(sp.percentile(tmp[~sp.isnan(tmp)],50))
+    # vals = sp.array(vals)
+
+    vals = np.array([np.nanpercentile(ratio, 50)])
 
     sidx   = sp.argsort(vals)
     iqr    = ( (sp.percentile(vals,75) - sp.percentile(vals,25) ) * 1.5)
